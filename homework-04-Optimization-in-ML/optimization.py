@@ -3,7 +3,6 @@ from numpy.linalg import LinAlgError
 import scipy
 from datetime import datetime
 from collections import defaultdict
-from scipy.optimize.linesearch import scalar_search_wolfe2
 
 
 class LineSearchTool(object):
@@ -75,45 +74,24 @@ class LineSearchTool(object):
         -------
         alpha : float or None if failure
             Chosen step size
-
         """
-        # TODO: Implement line search procedures for Armijo, Wolfe and Constant steps.
-
-        def phi(alpha):
-            return oracle.func_directional(x_k, d_k, alpha)
-
-        def derphi(alpha):
-            gval = oracle.grad_directional(x_k, d_k, alpha)
-            return gval
-
-
-        phi0 = phi(0)
-        derphi0 = derphi(0)
         if self._method == 'Wolfe':
-            alpha_res, phi_res, phi0, derphi_res = scalar_search_wolfe2(
-                phi, derphi, phi0 = phi0, derphi0 = derphi0, c1 = self.c1, c2 = self.c2)
-            if derphi_res is None:
-                if previous_alpha is None:
-                    alpha = self.alpha_0
-                else:
-                    alpha = previous_alpha
-                while (phi(alpha) > phi0 + self.c1 * alpha * derphi0):
-                    alpha = alpha / 2.0
-            else:
-                alpha = np.copy(alpha_res)
-
-        elif self._method == 'Armijo':
-            if previous_alpha is None:
-                alpha = self.alpha_0
-            else:
-                alpha = previous_alpha
-            while (phi(alpha) > phi0 + self.c1 * alpha * derphi0):
-                alpha = alpha / 2.0
+            return scipy.optimize.line_search(oracle.func, oracle.grad, x_k, d_k,
+                                              c1=self.c1, c2=self.c2, amax=self.alpha_0)[0]
 
         elif self._method == 'Constant':
             alpha = self.c
 
-        return alpha
+        if self._method == 'Armijo':
+            if previous_alpha is None:
+                alpha = self.alpha_0
+            else:
+                alpha = previous_alpha
+            phi0 = oracle.func(x_k)
+            while oracle.func_directional(x_k, d_k, alpha) > \
+                    phi0 + self.c1 * alpha * oracle.grad_directional(x_k, d_k, 0):
+                alpha /= 2
+            return alpha
 
 
 def get_line_search_tool(line_search_options=None):
@@ -175,32 +153,32 @@ def gradient_descent(oracle, x_0, tolerance=1e-5, max_iter=10000,
     >> print('Found optimal point: {}'.format(x_opt))
        Found optimal point: [ 0.  1.  2.  3.  4.]
     """
-    # TODO: Implement gradient descent
-    # Use line_search_tool.line_search() for adaptive step size.
     history = defaultdict(list) if trace else None
+    history['x'] = []
+    history['func'] = []
+    history['grad_norm'] = []
     line_search_tool = get_line_search_tool(line_search_options)
     x_k = np.copy(x_0)
-    alpha = None
-    start_time = datetime.now()
-    for _ in range(max_iter):
-        y_k = oracle.func(x_k)
-        d_k = oracle.grad(x_k)
-        if np.linalg.norm(d_k)**2  <= tolerance * np.linalg.norm(oracle.grad(x_0))**2:
+    d_k = - oracle.grad(x_k)
+    grad_norm_0 = d_k @ d_k
+    previous_alpha = 1.0
+    history['x'].append(x_k)
+    history['func'].append(oracle.func(x_k))
+    history['grad_norm'].append(grad_norm_0)
+    for k in range(max_iter):
+        d_k = - oracle.grad(x_k)
+        alpha = line_search_tool.line_search(oracle, x_k, d_k, previous_alpha)
+        x_k = x_k + alpha * d_k
+        #grad_norm = np.linalg.norm(d_k)**2
+        grad_norm = d_k @ d_k
+        previous_alpha = alpha
+        history['func'].append(oracle.func(x_k))
+        history['x'].append(x_k)
+        history['grad_norm'].append(grad_norm)
+        if grad_norm <= tolerance * grad_norm_0:
             return x_k, 'success', history
-        if np.isnan(d_k).any() or np.isinf(d_k).any():
-            return x_k,'computational_error', history
-        alpha = line_search_tool.line_search(oracle, x_k, -d_k, alpha)
-        x_k = x_k - alpha * d_k
-        if trace:
-            history['func'].append(y_k)
-            history['time'].append((datetime.now() - start_time).total_seconds())
-            history['grad_norm'].append(np.linalg.norm(d_k))
-            if x_k.size <= 2:
-                history['x'].append(x_k)
-    if np.linalg.norm(oracle.grad(oracle.func(x_k)))**2  > tolerance * np.linalg.norm(oracle.grad(x_0))**2:
-        return x_k,'iterations_exceeded', history
-    else:
-        return x_k, 'success', history
+    return x_k, 'iterations_exceeded', history
+
 
 
 def newton(oracle, x_0, tolerance=1e-5, max_iter=100,
@@ -257,8 +235,6 @@ def newton(oracle, x_0, tolerance=1e-5, max_iter=100,
     line_search_tool = get_line_search_tool(line_search_options)
     x_k = np.copy(x_0)
 
-    # TODO: Implement Newton's method.
-    # Use line_search_tool.line_search() for adaptive step size.
     start_time = datetime.now()
     for _ in range(max_iter):
         y_k = oracle.func(x_k)
